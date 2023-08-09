@@ -1,534 +1,454 @@
-#ifndef _GNU_SOURCE
-#define _GNU_SOURCE 1
-#endif
+/*
+ * S-Tree: A self-balancing binary search tree.
+ *
+ * AVL-trees promise a close-to-optimal tree layout for lookup, but they
+ * consume a significant amount of memory and require relatively slow
+ * balancing operations. Red-black trees offer quicker manipulation with
+ * a slightly less optimal tree layout, and the proposed S-Tree offers
+ * fast insertion and deletion by balancing trees during lookup.
+ *
+ * S-trees rely on four fundamental Binary Search Tree (BST) operations:
+ * rotate_left, rotate_right, replace_right, and replace_left. The latter
+ * two, replace_right and replace_left, are exclusively employed during node
+ * removal, following the conventional BST approach. They identify the
+ * next/last node in the right/left subtree, respectively, and perform the
+ * substitution of the node scheduled for deletion with the identified node.
+ *
+ * In contrast, rotate_left and rotate_right are integral to a dedicated update
+ * phase aimed at rebalancing the tree. This update phase follows both insert
+ * and remove phases in the current implementation. Nonetheless, it is
+ * theoretically possible to have arbitrary sequences comprising insert,
+ * remove, lookup, and update operations. Notably, the frequency of updates
+ * directly influences the extent to which the tree layout approaches
+ * optimality. However, it is important to consider that each update operation
+ * incurs a certain time penalty.
+ *
+ * The update function exhibits a relatively straightforward process: When a
+ * specific node leans to the right or left beyond a defined threshold, a left
+ * or right rotation is performed on the node, respectively. Concurrently, the
+ * node's hint is consistently updated. Additionally, if the node's hint becomes
+ * zero or experiences a change compared to its previous state during the
+ * update, modifications are made to the node's parent, as it existed before
+ * these update operations.
+ */
+
+/* S-Tree uses hints to decide whether to perform a balancing operation or not.
+ * Hints are similar to AVL-trees' height property, but they are not
+ * required to be absolutely accurate. A hint provides an approximation
+ * of the longest chain of nodes under the node to which the hint is attached.
+ */
+struct st_node {
+    short hint;
+    struct st_node *parent;
+    struct st_node *left, *right;
+};
+
+struct st_root {
+    struct st_node *root;
+};
+
+enum st_dir { LEFT, RIGHT };
+
+#define st_root(r) (r->root)
+#define st_left(n) (n->left)
+#define st_right(n) (n->right)
+#define st_rparent(n) (st_right(n)->parent)
+#define st_lparent(n) (st_left(n)->parent)
+#define st_parent(n) (n->parent)
+
+struct st_node *st_first(struct st_node *n)
+{
+    if (!st_left(n))
+        return n;
+
+    return st_first(st_left(n));
+}
+
+struct st_node *st_last(struct st_node *n)
+{
+    if (!st_right(n))
+        return n;
+
+    return st_last(st_right(n));
+}
+
+static inline void st_rotate_left(struct st_node *n)
+{
+    struct st_node *l = st_left(n), *p = st_parent(n);
+
+    st_parent(l) = st_parent(n);
+    st_left(n) = st_right(l);
+    st_parent(n) = l;
+    st_right(l) = n;
+
+    if (p && st_left(p) == n)
+        st_left(p) = l;
+    else if (p)
+        st_right(p) = l;
+
+    if (st_left(n))
+        st_lparent(n) = n;
+}
+
+static inline void st_rotate_right(struct st_node *n)
+{
+    struct st_node *r = st_right(n), *p = st_parent(n);
+
+    st_parent(r) = st_parent(n);
+    st_right(n) = st_left(r);
+    st_parent(n) = r;
+    st_left(r) = n;
+
+    if (p && st_left(p) == n)
+        st_left(p) = r;
+    else if (p)
+        st_right(p) = r;
+
+    if (st_right(n))
+        st_rparent(n) = n;
+}
+
+static inline int st_balance(struct st_node *n)
+{
+    int l = 0, r = 0;
+
+    if (st_left(n))
+        l = st_left(n)->hint + 1;
+
+    if (st_right(n))
+        r = st_right(n)->hint + 1;
+
+    return l - r;
+}
+
+static inline int st_max_hint(struct st_node *n)
+{
+    int l = 0, r = 0;
+
+    if (st_left(n))
+        l = st_left(n)->hint + 1;
+
+    if (st_right(n))
+        r = st_right(n)->hint + 1;
+
+    return l > r ? l : r;
+}
+
+static inline void st_update(struct st_node **root, struct st_node *n)
+{
+    if (!n)
+        return;
+
+    int b = st_balance(n);
+    int prev_hint = n->hint;
+    struct st_node *p = st_parent(n);
+
+    if (b < -1) {
+        /* leaning to the right */
+        if (n == *root)
+            *root = st_right(n);
+        st_rotate_right(n);
+    }
+
+    else if (b > 1) {
+        /* leaning to the left */
+        if (n == *root)
+            *root = st_left(n);
+        st_rotate_left(n);
+    }
+
+    n->hint = st_max_hint(n);
+    if (n->hint == 0 || n->hint != prev_hint)
+        st_update(root, p);
+}
+
+/* The process of insertion is straightforward and follows the standard approach
+ * used in any BST. After inserting a new node into the tree using conventional
+ * BST insertion techniques, an update operation is invoked on the newly
+ * inserted node.
+ */
+void st_insert(struct st_node **root,
+               struct st_node *p,
+               struct st_node *n,
+               enum st_dir d)
+{
+    if (d == LEFT)
+        st_left(p) = n;
+    else
+        st_right(p) = n;
+
+    st_parent(n) = p;
+    st_update(root, n);
+}
+
+static inline void st_replace_right(struct st_node *n, struct st_node *r)
+{
+    struct st_node *p = st_parent(n), *rp = st_parent(r);
+
+    if (st_left(rp) == r) {
+        st_left(rp) = st_right(r);
+        if (st_right(r))
+            st_rparent(r) = rp;
+    }
+
+    if (st_parent(rp) == n)
+        st_parent(rp) = r;
+
+    st_parent(r) = p;
+    st_left(r) = st_left(n);
+
+    if (st_right(n) != r) {
+        st_right(r) = st_right(n);
+        st_rparent(n) = r;
+    }
+
+    if (p && st_left(p) == n)
+        st_left(p) = r;
+    else if (p)
+        st_right(p) = r;
+
+    if (st_left(n))
+        st_lparent(n) = r;
+}
+
+static inline void st_replace_left(struct st_node *n, struct st_node *l)
+{
+    struct st_node *p = st_parent(n), *lp = st_parent(l);
+
+    if (st_right(lp) == l) {
+        st_right(lp) = st_left(l);
+        if (st_left(l))
+            st_lparent(l) = lp;
+    }
+
+    if (st_parent(lp) == n)
+        st_parent(lp) = l;
+
+    st_parent(l) = p;
+    st_right(l) = st_right(n);
+
+    if (st_left(n) != l) {
+        st_left(l) = st_left(n);
+        st_lparent(n) = l;
+    }
+
+    if (p && st_left(p) == n)
+        st_left(p) = l;
+    else if (p)
+        st_right(p) = l;
+
+    if (st_right(n))
+        st_rparent(n) = l;
+}
+
+/* The process of deletion in this tree structure is relatively more intricate,
+ * although it shares similarities with deletion methods employed in other BST.
+ * When removing a node, if the node to be deleted has a right child, the
+ * deletion process entails replacing the node to be removed with the first node
+ * encountered in the right subtree. Following this replacement, an update
+ * operation is invoked on the right child of the newly inserted node.
+ *
+ * Similarly, if the node to be deleted does not have a right child, the
+ * replacement process involves utilizing the first node found in the left
+ * subtree. Subsequently, an update operation is called on the left child of th
+ * replacement node.
+ *
+ * In scenarios where the node to be deleted has no children (neither left nor
+ * right), it can be directly removed from the tree, and an update operation is
+ * invoked on the parent node of the deleted node.
+ */
+void st_remove(struct st_node **root, struct st_node *del)
+{
+    if (st_right(del)) {
+        struct st_node *least = st_first(st_right(del));
+        if (del == *root)
+            *root = least;
+
+        //st_replace_left(del,least);
+        st_replace_right(del,least);
+        st_update(root,least);
+        return;
+    }
+
+    if (st_left(del)) {
+        struct st_node *most = st_last(st_left(del));
+        if (del == *root)
+            *root = most;
+
+        //st_replace_right(del,most);
+        st_replace_left(del,most);
+        st_update(root,most);
+        return;
+    }
+
+    if (del == *root) {
+        *root = 0;
+        return;
+    }
+
+    /* empty node */
+    struct st_node *parent = st_parent(del);
+
+    if (st_left(parent) == del)
+        st_left(parent) = 0;
+    else
+        st_right(parent) = 0;
+
+    st_update(root,parent);
+}
+
+/* Test program */
 
 #include <assert.h>
-#include <errno.h>
-#include <pthread.h>
-#include <stdbool.h>
+#include <stddef.h> /* offsetof */
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <time.h>
 
-#define verify(x)                                                      \
-    do {                                                               \
-        int e;                                                         \
-        if ((e = x) != 0) {                                            \
-            fprintf(stderr, "%s(%d) %s: %s\n", __FILE__, __LINE__, #x, \
-                    strerror(e));                                      \
-            exit(1);                                                   \
-        }                                                              \
-    } while (0)
+#define container_of(ptr, type, member) \
+    ((type *) ((char *) (ptr) - (offsetof(type, member))))
 
-typedef int cmp_t(const void *, const void *);
-static inline char *med3(char *, char *, char *, cmp_t *, void *);
-static inline void swapfunc(char *, char *, int, int);
+#define treeint_entry(ptr) container_of(ptr, struct treeint, st_n)
 
-#define min(a, b)           \
-    ({                      \
-        typeof(a) _a = (a); \
-        typeof(b) _b = (b); \
-        _a < _b ? _a : _b;  \
-    })
-
-/* Qsort routine from Bentley & McIlroy's "Engineering a Sort Function" */
-#define swapcode(TYPE, parmi, parmj, n) \
-    {                                   \
-        long i = (n) / sizeof(TYPE);    \
-        TYPE *pi = (TYPE *) (parmi);    \
-        TYPE *pj = (TYPE *) (parmj);    \
-        do {                            \
-            TYPE t = *pi;               \
-            *pi++ = *pj;                \
-            *pj++ = t;                  \
-        } while (--i > 0);              \
-    }
-
-static inline void swapfunc(char *a, char *b, int n, int swaptype)
-{
-    if (swaptype <= 1)
-        swapcode(long, a, b, n) else swapcode(char, a, b, n)
-}
-
-#define swap(a, b)                         \
-    do {                                   \
-        if (swaptype == 0) {               \
-            long t = *(long *) (a);        \
-            *(long *) (a) = *(long *) (b); \
-            *(long *) (b) = t;             \
-        } else                             \
-            swapfunc(a, b, es, swaptype);  \
-    } while (0)
-
-#define vecswap(a, b, n)                 \
-    do {                                 \
-        if ((n) > 0)                     \
-            swapfunc(a, b, n, swaptype); \
-    } while (0)
-
-#define CMP(t, x, y) (cmp((x), (y)))
-
-static inline char *med3(char *a, char *b, char *c, cmp_t *cmp, void *thunk)
-{
-    return CMP(thunk, a, b) < 0
-               ? (CMP(thunk, b, c) < 0 ? b : (CMP(thunk, a, c) < 0 ? c : a))
-               : (CMP(thunk, b, c) > 0 ? b : (CMP(thunk, a, c) < 0 ? a : c));
-}
-
-/* We use some elaborate condition variables and signalling
- * to ensure a bound of the number of active threads at
- * 2 * maxthreads and the size of the thread data structure
- * to maxthreads.
- */
-
-/* Condition of starting a new thread. */
-enum thread_state {
-    ts_idle, /* Idle, waiting for instructions. */
-    ts_work, /* Has work to do. */
-    ts_term  /* Asked to terminate. */
+struct treeint {
+    int value;
+    struct st_node st_n;
 };
 
-/* Variant part passed to qsort invocations. */
-struct qsort {
-    enum thread_state st;   /* For coordinating work. */
-    struct common *common;  /* Common shared elements. */
-    void *a;                /* Array base. */
-    size_t n;               /* Number of elements. */
-    pthread_t id;           /* Thread id. */
-    pthread_mutex_t mtx_st; /* For signalling state change. */
-    pthread_cond_t cond_st; /* For signalling state change. */
-};
+static struct st_root *tree;
 
-/* Invariant common part, shared across invocations. */
-struct common {
-    int swaptype;           /* Code to use for swapping */
-    size_t es;              /* Element size. */
-    void *thunk;            /* Thunk for qsort_r */
-    cmp_t *cmp;             /* Comparison function */
-    int nthreads;           /* Total number of pool threads. */
-    int idlethreads;        /* Number of idle threads in pool. */
-    int forkelem;           /* Minimum number of elements for a new thread. */
-    struct qsort *pool;     /* Fixed pool of threads. */
-    pthread_mutex_t mtx_al; /* For allocating threads in the pool. */
-};
-
-static void *qsort_thread(void *p);
-
-/* The multithreaded qsort public interface */
-void qsort_mt(void *a,
-              size_t n,
-              size_t es,
-              cmp_t *cmp,
-              int maxthreads,
-              int forkelem)
+int treeint_init()
 {
-    struct qsort *qs;
-    struct common c;
-    int i, islot;
-    bool bailout = true;
-
-    if (n < forkelem)
-        goto f1;
-    errno = 0;
-    /* Try to initialize the resources we need. */
-    if (pthread_mutex_init(&c.mtx_al, NULL) != 0)
-        goto f1;
-    if ((c.pool = calloc(maxthreads, sizeof(struct qsort))) == NULL)
-        goto f2;
-    for (islot = 0; islot < maxthreads; islot++) {
-        qs = &c.pool[islot];
-        if (pthread_mutex_init(&qs->mtx_st, NULL) != 0)
-            goto f3;
-        if (pthread_cond_init(&qs->cond_st, NULL) != 0) {
-            verify(pthread_mutex_destroy(&qs->mtx_st));
-            goto f3;
-        }
-        qs->st = ts_idle;
-        qs->common = &c;
-        if (pthread_create(&qs->id, NULL, qsort_thread, qs) != 0) {
-            verify(pthread_mutex_destroy(&qs->mtx_st));
-            verify(pthread_cond_destroy(&qs->cond_st));
-            goto f3;
-        }
-    }
-
-    /* All systems go. */
-    bailout = false;
-
-    /* Initialize common elements. */
-    c.swaptype = ((char *) a - (char *) 0) % sizeof(long) || es % sizeof(long)
-                     ? 2
-                 : es == sizeof(long) ? 0
-                                      : 1;
-    c.es = es;
-    c.cmp = cmp;
-    c.forkelem = forkelem;
-    c.idlethreads = c.nthreads = maxthreads;
-
-    /* Hand out the first work batch. */
-    qs = &c.pool[0];
-    verify(pthread_mutex_lock(&qs->mtx_st));
-    qs->a = a;
-    qs->n = n;
-    qs->st = ts_work;
-    c.idlethreads--;
-    verify(pthread_cond_signal(&qs->cond_st));
-    verify(pthread_mutex_unlock(&qs->mtx_st));
-
-    /* Wait for all threads to finish, and free acquired resources. */
-f3:
-    for (i = 0; i < islot; i++) {
-        qs = &c.pool[i];
-        if (bailout) {
-            verify(pthread_mutex_lock(&qs->mtx_st));
-            qs->st = ts_term;
-            verify(pthread_cond_signal(&qs->cond_st));
-            verify(pthread_mutex_unlock(&qs->mtx_st));
-        }
-        verify(pthread_join(qs->id, NULL));
-        verify(pthread_mutex_destroy(&qs->mtx_st));
-        verify(pthread_cond_destroy(&qs->cond_st));
-    }
-    free(c.pool);
-f2:
-    verify(pthread_mutex_destroy(&c.mtx_al));
-    if (bailout) {
-        fprintf(stderr, "Resource initialization failed; bailing out.\n");
-    f1:
-        qsort(a, n, es, cmp);
-    }
+    tree = calloc(sizeof(struct st_root), 1);
+    assert(tree);
+    return 0;
 }
 
-#define thunk NULL
-
-/* Allocate an idle thread from the pool, lock its mutex, change its state to
- * work, decrease the number of idle threads, and return a pointer to its data
- * area.
- * Return NULL, if no thread is available.
- */
-static struct qsort *allocate_thread(struct common *c)
+static void __treeint_destroy(struct st_node *n)
 {
-    verify(pthread_mutex_lock(&c->mtx_al));
-    for (int i = 0; i < c->nthreads; i++)
-        if (c->pool[i].st == ts_idle) {
-            c->idlethreads--;
-            c->pool[i].st = ts_work;
-            verify(pthread_mutex_lock(&c->pool[i].mtx_st));
-            verify(pthread_mutex_unlock(&c->mtx_al));
-            return (&c->pool[i]);
-        }
-    verify(pthread_mutex_unlock(&c->mtx_al));
-    return (NULL);
+    if (st_left(n))
+        __treeint_destroy(st_left(n));
+
+    if (st_right(n))
+        __treeint_destroy(st_right(n));
+
+    struct treeint *i = treeint_entry(n);
+    free(i);
 }
 
-/* Thread-callable quicksort. */
-static void qsort_algo(struct qsort *qs)
+int treeint_destroy()
 {
-    char *pa, *pb, *pc, *pd, *pl, *pm, *pn;
-    int d, r, swaptype, swap_cnt;
-    void *a;      /* Array of elements. */
-    size_t n, es; /* Number of elements; size. */
-    cmp_t *cmp;
-    int nl, nr;
-    struct common *c;
-    struct qsort *qs2;
+    assert(tree);
+    if (st_root(tree))
+        __treeint_destroy(st_root(tree));
 
-    /* Initialize qsort arguments. */
-    c = qs->common;
-    es = c->es;
-    cmp = c->cmp;
-    swaptype = c->swaptype;
-    a = qs->a;
-    n = qs->n;
-top:
-    /* From here on qsort(3) business as usual. */
-    swap_cnt = 0;
-    if (n < 7) {
-        for (pm = (char *) a + es; pm < (char *) a + n * es; pm += es)
-            for (pl = pm; pl > (char *) a && CMP(thunk, pl - es, pl) > 0;
-                 pl -= es)
-                swap(pl, pl - es);
+    free(tree);
+    return 0;
+}
+
+struct treeint *treeint_insert(int a)
+{
+    struct st_node *p = NULL;
+    enum st_dir d;
+    for (struct st_node *n = st_root(tree); n;) {
+        struct treeint *t = container_of(n, struct treeint, st_n);
+        if (a == t->value)
+            return t;
+
+        p = n;
+
+        if (a < t->value) {
+            n = st_left(n);
+            d = LEFT;
+        } else if (a > t->value) {
+            n = st_right(n);
+            d = RIGHT;
+        }
+    }
+
+    struct treeint *i = calloc(sizeof(struct treeint), 1);
+    if (st_root(tree))
+        st_insert(&st_root(tree), p, &i->st_n, d);
+    else
+        st_root(tree) = &i->st_n;
+
+    i->value = a;
+    return i;
+}
+
+struct treeint *treeint_find(int a)
+{
+    struct st_node *n = st_root(tree);
+    while (n) {
+        struct treeint *t = treeint_entry(n);
+        if (a == t->value)
+            return t;
+
+        if (a < t->value)
+            n = st_left(n);
+        else if (a > t->value)
+            n = st_right(n);
+    }
+
+    return 0;
+}
+
+int treeint_remove(int a)
+{
+    struct treeint *n = treeint_find(a);
+    if (!n)
+        return -1;
+
+    st_remove(&st_root(tree), &n->st_n);
+    free(n);
+    return 0;
+}
+
+/* ascending order */
+static void __treeint_dump(struct st_node *n, int depth)
+{
+    if (!n)
         return;
-    }
-    pm = (char *) a + (n / 2) * es;
-    if (n > 7) {
-        pl = (char *) a;
-        pn = (char *) a + (n - 1) * es;
-        if (n > 40) {
-            d = (n / 8) * es;
-            pl = med3(pl, pl + d, pl + 2 * d, cmp, thunk);
-            pm = med3(pm - d, pm, pm + d, cmp, thunk);
-            pn = med3(pn - 2 * d, pn - d, pn, cmp, thunk);
-        }
-        pm = med3(pl, pm, pn, cmp, thunk);
-    }
-    swap(a, pm);
-    pa = pb = (char *) a + es;
 
-    pc = pd = (char *) a + (n - 1) * es;
-    for (;;) {
-        while (pb <= pc && (r = CMP(thunk, pb, a)) <= 0) {
-            if (r == 0) {
-                swap_cnt = 1;
-                swap(pa, pb);
-                pa += es;
-            }
-            pb += es;
-        }
-        while (pb <= pc && (r = CMP(thunk, pc, a)) >= 0) {
-            if (r == 0) {
-                swap_cnt = 1;
-                swap(pc, pd);
-                pd -= es;
-            }
-            pc -= es;
-        }
-        if (pb > pc)
-            break;
-        swap(pb, pc);
-        swap_cnt = 1;
-        pb += es;
-        pc -= es;
-    }
+    __treeint_dump(n->left, depth + 1);
 
-    pn = (char *) a + n * es;
-    r = min(pa - (char *) a, pb - pa);
-    vecswap(a, pb - r, r);
-    r = min(pd - pc, pn - pd - es);
-    vecswap(pb, pn - r, r);
+    struct treeint *v = treeint_entry(n);
+    printf("%d\n", v->value);
 
-    if (swap_cnt == 0) { /* Switch to insertion sort */
-        r = 1 + n / 4;   /* n >= 7, so r >= 2 */
-        for (pm = (char *) a + es; pm < (char *) a + n * es; pm += es)
-            for (pl = pm; pl > (char *) a && CMP(thunk, pl - es, pl) > 0;
-                 pl -= es) {
-                swap(pl, pl - es);
-                if (++swap_cnt > r)
-                    goto nevermind;
-            }
-        return;
-    }
-
-nevermind:
-    nl = (pb - pa) / es;
-    nr = (pd - pc) / es;
-
-    /* Now try to launch subthreads. */
-    if (nl > c->forkelem && nr > c->forkelem &&
-        (qs2 = allocate_thread(c)) != NULL) {
-        qs2->a = a;
-        qs2->n = nl;
-        verify(pthread_cond_signal(&qs2->cond_st));
-        verify(pthread_mutex_unlock(&qs2->mtx_st));
-    } else if (nl > 0) {
-        qs->a = a;
-        qs->n = nl;
-        qsort_algo(qs);
-    }
-    if (nr > 0) {
-        a = pn - nr * es;
-        n = nr;
-        goto top;
-    }
+    __treeint_dump(n->right, depth + 1);
 }
 
-/* Thread-callable quicksort. */
-static void *qsort_thread(void *p)
+void treeint_dump()
 {
-    struct qsort *qs, *qs2;
-    int i;
-    struct common *c;
-
-    qs = p;
-    c = qs->common;
-    
-again:
-    /* Wait for work to be allocated. */
-    verify(pthread_mutex_lock(&qs->mtx_st));
-    
-    while (qs->st == ts_idle)
-    	verify(pthread_cond_wait(&qs->cond_st,&qs->mtx_st));//HHHH
-    verify(pthread_mutex_unlock(&qs->mtx_st));
-    if (qs->st == ts_term) {
-        return NULL;
-    }
-    assert(qs->st == ts_work);
-
-    qsort_algo(qs);
-
-    verify(pthread_mutex_lock(&c->mtx_al));
-    qs->st = ts_idle;
-    c->idlethreads++;
-    
-    if (c->idlethreads == c->nthreads) {
-        for (i = 0; i < c->nthreads; i++) {
-            qs2 = &c->pool[i];
-            if (qs2 == qs)
-                continue;
-            verify(pthread_mutex_lock(&qs2->mtx_st));
-            qs2->st = ts_term;
-            
-            verify(pthread_cond_signal(&qs2->cond_st));
-            verify(pthread_mutex_unlock(&qs2->mtx_st));
-        }
-        verify(pthread_mutex_unlock(&c->mtx_al));
-        return NULL;
-    }
-    verify(pthread_mutex_unlock(&c->mtx_al));
-    goto again;
+    __treeint_dump(st_root(tree), 0);
 }
 
-#include <err.h>
-#include <stdint.h>
-#include <sys/resource.h>
-#include <sys/time.h>
-#include <unistd.h>
-
-#ifndef ELEM_T
-#define ELEM_T uint32_t
-#endif
-
-int num_compare(const void *a, const void *b)
+int main()
 {
-    return (*(ELEM_T *) a - *(ELEM_T *) b);
-}
+    srand(time(0));
 
-int string_compare(const void *a, const void *b)
-{
-    return strcmp(*(char **) a, *(char **) b);
-}
+    treeint_init();
 
-void *xmalloc(size_t s)
-{
-    void *p;
+    for (int i = 0; i < 100; ++i)
+        treeint_insert(rand() % 99);
 
-    if ((p = malloc(s)) == NULL) {
-        perror("malloc");
-        exit(1);
+    printf("[ After insertions ]\n");
+    treeint_dump();
+
+    printf("Removing...\n");
+    for (int i = 0; i < 100; ++i) {
+        int v = rand() % 99;
+        printf("%2d  ", v);
+        if ((i + 1) % 10 == 0)
+            printf("\n");
+        treeint_remove(v);
     }
-    return (p);
-}
+    printf("\n");
 
-void usage(void)
-{
-    fprintf(
-        stderr,
-        "usage: qsort_mt [-stv] [-f forkelements] [-h threads] [-n elements]\n"
-        "\t-l\tRun the libc version of qsort\n"
-        "\t-s\tTest with 20-byte strings, instead of integers\n"
-        "\t-t\tPrint timing results\n"
-        "\t-v\tVerify the integer results\n"
-        "Defaults are 1e7 elements, 2 threads, 100 fork elements\n");
-    exit(1);
-}
+    printf("[ After removals ]\n");
+    treeint_dump();
 
-int main(int argc, char *argv[])
-{
-    bool opt_str = false;
-    bool opt_time = false;
-    bool opt_verify = false;
-    bool opt_libc = false;
-    int ch, i;
-    size_t nelem = 10000000;
-    int threads = 2;
-    int forkelements = 100;
-    ELEM_T *int_elem;
-    char *ep;
-    char **str_elem;
-    struct timeval start, end;
-    struct rusage ru;
+    treeint_destroy();
 
-    gettimeofday(&start, NULL);
-    while ((ch = getopt(argc, argv, "f:h:ln:stv")) != -1) {
-        switch (ch) {
-        case 'f':
-            forkelements = (int) strtol(optarg, &ep, 10);
-            if (forkelements <= 0 || *ep != '\0') {
-                warnx("illegal number, -f argument -- %s", optarg);
-                usage();
-            }
-            break;
-        case 'h':
-            threads = (int) strtol(optarg, &ep, 10);
-            if (threads < 0 || *ep != '\0') {
-                warnx("illegal number, -h argument -- %s", optarg);
-                usage();
-            }
-            break;
-        case 'l':
-            opt_libc = true;
-            break;
-        case 'n':
-            nelem = (size_t) strtol(optarg, &ep, 10);
-            if (nelem == 0 || *ep != '\0') {
-                warnx("illegal number, -n argument -- %s", optarg);
-                usage();
-            }
-            break;
-        case 's':
-            opt_str = true;
-            break;
-        case 't':
-            opt_time = true;
-            break;
-        case 'v':
-            opt_verify = true;
-            break;
-        case '?':
-        default:
-            usage();
-            
-        }
-    }
-
-    if (opt_verify && opt_str)
-        usage();
-
-    argc -= optind;
-    argv += optind;
-
-    if (opt_str) {
-        str_elem = xmalloc(nelem * sizeof(char *));
-        for (i = 0; i < nelem; i++)
-            if (asprintf(&str_elem[i], "%d%d", rand(), rand()) == -1) {
-                perror("asprintf");
-                exit(1);
-            }
-    } else {
-        int_elem = xmalloc(nelem * sizeof(ELEM_T));
-        for (i = 0; i < nelem; i++)
-            int_elem[i] = rand() % nelem;
-    }
-    if (opt_str) {
-        if (opt_libc)
-            qsort(str_elem, nelem, sizeof(char *), string_compare);
-        else
-            qsort_mt(str_elem, nelem, sizeof(char *), string_compare, threads,
-                     forkelements);
-    } else {
-        if (opt_libc)
-            qsort(int_elem, nelem, sizeof(ELEM_T), num_compare);
-        else
-            qsort_mt(int_elem, nelem, sizeof(ELEM_T), num_compare, threads,
-                     forkelements);
-    }
-    gettimeofday(&end, NULL);
-    getrusage(RUSAGE_SELF, &ru);
-    if (opt_verify) {
-        for (i = 1; i < nelem; i++)
-            if (int_elem[i - 1] > int_elem[i]) {
-                fprintf(stderr,
-                        "sort error at position %d: "
-                        " %d > %d\n",
-                        i, int_elem[i - 1], int_elem[i]);
-                exit(2);
-            }
-    }
-    if (opt_time)
-        printf(
-            "%.3g %.3g %.3g\n",
-            (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6,
-            ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1e6,
-            ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1e6);
-    return (0);
+    return 0;
 }
