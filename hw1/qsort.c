@@ -177,6 +177,7 @@ void qsort_mt(void *a,
 
     /* Wait for all threads to finish, and free acquired resources. */
 f3:
+    printf("f3");
     for (i = 0; i < islot; i++) {
         qs = &c.pool[i];
         if (bailout) {
@@ -191,10 +192,12 @@ f3:
     }
     free(c.pool);
 f2:
+    printf("f2");
     verify(pthread_mutex_destroy(&c.mtx_al));
     if (bailout) {
         fprintf(stderr, "Resource initialization failed; bailing out.\n");
     f1:
+        printf("f1");
         qsort(a, n, es, cmp);
     }
 }
@@ -212,8 +215,9 @@ static struct qsort *allocate_thread(struct common *c)
     for (int i = 0; i < c->nthreads; i++)
         if (c->pool[i].st == ts_idle) {
             c->idlethreads--;
-            c->pool[i].st = ts_work;
+            
             verify(pthread_mutex_lock(&c->pool[i].mtx_st));
+            c->pool[i].st = ts_work;
             verify(pthread_mutex_unlock(&c->mtx_al));
             return (&c->pool[i]);
         }
@@ -488,6 +492,7 @@ int main(int argc, char *argv[])
     argv += optind;
 
     if (opt_str) {
+        
         str_elem = xmalloc(nelem * sizeof(char *));
         for (i = 0; i < nelem; i++)
             if (asprintf(&str_elem[i], "%d%d", rand(), rand()) == -1) {
@@ -495,17 +500,20 @@ int main(int argc, char *argv[])
                 exit(1);
             }
     } else {
+        printf("2:");
         int_elem = xmalloc(nelem * sizeof(ELEM_T));
         for (i = 0; i < nelem; i++)
             int_elem[i] = rand() % nelem;
     }
     if (opt_str) {
+        
         if (opt_libc)
             qsort(str_elem, nelem, sizeof(char *), string_compare);
         else
             qsort_mt(str_elem, nelem, sizeof(char *), string_compare, threads,
                      forkelements);
     } else {
+        printf("4:");
         if (opt_libc)
             qsort(int_elem, nelem, sizeof(ELEM_T), num_compare);
         else
@@ -526,9 +534,11 @@ int main(int argc, char *argv[])
     }
     if (opt_time)
         printf(
-            "%.3g %.3g %.3g\n",
+            "This is : %.3g %.3g %.3g\n",
             (end.tv_sec - start.tv_sec) + (end.tv_usec - start.tv_usec) / 1e6,
             ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1e6,
             ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1e6);
     return (0);
 }
+//how to compile : gcc -Wall -o qsort qsort.c -lpthread
+//run : ./qsort -tv -f2 -h2 -n10
